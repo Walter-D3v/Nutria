@@ -3,46 +3,28 @@ import fs from 'fs';
 import path from 'path';
 const { Client, LocalAuth } = pkg;
 
-const clients = new Map();
-const mapIsReady = new Map();
+let whatsappClient = null;
+let isReady = false;
 let ioRef = null;
 
-const AUTH_DIR = './.wwebjs_auth';
+const AUTH_DIR = './.wwebjs_auth/session-default';
 
 export function setIo(io) {
     ioRef = io;
 }
 
-export function getClient(clientId) {
-    return clients.get(clientId) || null;
+export function getClient() {
+    return whatsappClient;
 }
 
-export function getIsReady(clientId) {
-    return mapIsReady.get(clientId) || false;
+export function getIsReady() {
+    return isReady;
 }
 
-export function getSavedSessions(userId) {
-    if (!fs.existsSync(AUTH_DIR)) return [];
-    try {
-        const items = fs.readdirSync(AUTH_DIR);
-        // LocalAuth creates subdirectories named "session-<clientId>"
-        return items
-            .filter(item => item.startsWith(`session-user_${userId}_`))
-            .map(item => item.replace(`session-user_${userId}_`, ''));
-    } catch (e) {
-        console.error('Error al leer sesiones:', e.message);
-        return [];
-    }
-}
-
-export function initWhatsApp(clientId, userId) {
-    if (!clientId) throw new Error("Se requiere un clientId");
-    
-    const frontendId = clientId.replace(`user_${userId}_`, '');
-
-    if (clients.has(clientId)) {
-        if (mapIsReady.get(clientId)) {
-            ioRef?.to(`user_${userId}`).emit('ready', { clientId: frontendId, status: 'Conectado exitosamente' });
+export function initWhatsApp() {
+    if (whatsappClient) {
+        if (isReady) {
+            ioRef?.emit('ready', { status: 'Conectado exitosamente' });
         }
         return;
     }
@@ -50,106 +32,97 @@ export function initWhatsApp(clientId, userId) {
     const execPath = process.env.PUPPETEER_EXECUTABLE_PATH;
     const finalExecPath = execPath === '/nix/store/chromium' ? 'chromium' : (execPath || undefined);
 
-    const client = new Client({
-        authStrategy: new LocalAuth({ dataPath: AUTH_DIR, clientId: clientId }),
+    whatsappClient = new Client({
+        authStrategy: new LocalAuth({ dataPath: AUTH_DIR }),
         puppeteer: {
             executablePath: finalExecPath,
             args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
         }
     });
 
-    client.on('qr', (qr) => {
-        console.log(`\n--- [${clientId}] ESCANEA EL CÓDIGO QR EN LA WEB ---\n`);
-        ioRef?.to(`user_${userId}`).emit('qr', { clientId: frontendId, qr });
+    whatsappClient.on('qr', (qr) => {
+        console.log(`\n--- ESCANEA EL CÓDIGO QR EN LA WEB ---\n`);
+        ioRef?.emit('qr', { qr });
     });
 
-    client.on('authenticated', () => {
-        console.log(`[${clientId}] Autenticación exitosa.`);
-        ioRef?.to(`user_${userId}`).emit('loading', { clientId: frontendId, message: 'Autenticando...' });
+    whatsappClient.on('authenticated', () => {
+        console.log(`Autenticación exitosa.`);
+        ioRef?.emit('loading', { message: 'Autenticando...' });
     });
 
-    client.on('loading_screen', (percent, message) => {
-        console.log(`[${clientId}] Cargando WhatsApp GUI: ${percent}% ${message}`);
-        ioRef?.to(`user_${userId}`).emit('loading', { clientId: frontendId, message: `Cargando interfaz... ${percent}%` });
+    whatsappClient.on('loading_screen', (percent, message) => {
+        console.log(`Cargando WhatsApp GUI: ${percent}% ${message}`);
+        ioRef?.emit('loading', { message: `Cargando interfaz... ${percent}%` });
     });
 
-    client.on('ready', () => {
-        mapIsReady.set(clientId, true);
-        console.log(`\n[${clientId}] ¡CONEXIÓN EXITOSA! ✅ El cliente está listo.`);
-        ioRef?.to(`user_${userId}`).emit('ready', { clientId: frontendId, status: 'Conectado exitosamente' });
+    whatsappClient.on('ready', () => {
+        isReady = true;
+        console.log(`\n¡CONEXIÓN EXITOSA! ✅ El cliente está listo.`);
+        ioRef?.emit('ready', { status: 'Conectado exitosamente' });
     });
 
-    client.on('auth_failure', (msg) => {
-        console.error(`[${clientId}] Fallo en la autenticación`, msg);
-        ioRef?.to(`user_${userId}`).emit('auth_failure', { clientId: frontendId, error: 'Fallo al autenticar', details: msg });
-        mapIsReady.set(clientId, false);
+    whatsappClient.on('auth_failure', (msg) => {
+        console.error(`Fallo en la autenticación`, msg);
+        ioRef?.emit('auth_failure', { error: 'Fallo al autenticar', details: msg });
+        isReady = false;
     });
 
-    client.on('disconnected', (reason) => {
-        console.log(`[${clientId}] Cliente desconectado:`, reason);
-        ioRef?.to(`user_${userId}`).emit('disconnected', { clientId: frontendId, reason });
-        mapIsReady.set(clientId, false);
-        client.destroy();
-        clients.delete(clientId);
+    whatsappClient.on('disconnected', (reason) => {
+        console.log(`Cliente desconectado:`, reason);
+        ioRef?.emit('disconnected', { reason });
+        isReady = false;
+        if (whatsappClient) {
+            whatsappClient.destroy();
+            whatsappClient = null;
+        }
     });
 
-    console.log(`[${clientId}] Iniciando cliente de WhatsApp...`);
-    clients.set(clientId, client);
-    mapIsReady.set(clientId, false);
-    client.initialize();
+    console.log(`Iniciando cliente de WhatsApp global...`);
+    isReady = false;
+    whatsappClient.initialize();
 }
 
 /**
  * Envía un mensaje a un número.
- * @param {string} clientId 
  * @param {string} phone 
  * @param {string} text 
  */
-export async function sendWhatsAppMessage(clientId, phone, text) {
-    const client = clients.get(clientId);
-    if (!client || !mapIsReady.get(clientId)) {
-        throw new Error(`WhatsApp (${clientId}) no está conectado.`);
+export async function sendWhatsAppMessage(phone, text) {
+    if (!whatsappClient || !isReady) {
+        throw new Error(`WhatsApp no está conectado.`);
     }
-    const numberId = await client.getNumberId(phone);
+    const numberId = await whatsappClient.getNumberId(phone);
     if (!numberId) {
         throw new Error(`El número ${phone} no está registrado en WhatsApp.`);
     }
-    await client.sendMessage(numberId._serialized, text);
+    await whatsappClient.sendMessage(numberId._serialized, text);
 }
 
-export async function logoutWhatsApp(clientId, userId) {
-    const client = clients.get(clientId);
-    const frontendId = userId ? clientId.replace(`user_${userId}_`, '') : clientId;
-
-    if (client) {
-        console.log(`[${clientId}] Cerrando sesión de WhatsApp...`);
+export async function logoutWhatsApp() {
+    if (whatsappClient) {
+        console.log(`Cerrando sesión de WhatsApp global...`);
         try {
-            if (mapIsReady.get(clientId)) await client.logout();
+            if (isReady) await whatsappClient.logout();
         } catch (e) {
-            console.error(`[${clientId}] Error logout:`, e.message);
+            console.error(`Error logout:`, e.message);
         }
         try {
-            await client.destroy();
+            await whatsappClient.destroy();
         } catch (e) {
-            console.error(`[${clientId}] Error destroy:`, e.message);
+            console.error(`Error destroy:`, e.message);
         }
-        clients.delete(clientId);
-        mapIsReady.delete(clientId);
+        whatsappClient = null;
+        isReady = false;
     }
     
-    const sessionDir = path.join(AUTH_DIR, `session-${clientId}`);
-    if (fs.existsSync(sessionDir)) {
+    if (fs.existsSync(AUTH_DIR)) {
         try {
-            fs.rmSync(sessionDir, { recursive: true, force: true });
-            console.log(`[${clientId}] Carpeta eliminada.`);
+            fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+            console.log(`Carpeta de sesión eliminada.`);
         } catch (e) {
-            console.error(`[${clientId}] Error borrar carpeta:`, e.message);
+            console.error(`Error borrar carpeta:`, e.message);
         }
     }
     
-    if (userId) {
-        ioRef?.to(`user_${userId}`).emit('disconnected', { clientId: frontendId, reason: 'Cierre de sesión manual' });
-    } else {
-        ioRef?.emit('disconnected', { clientId: frontendId, reason: 'Cierre de sesión manual' });
-    }
+    ioRef?.emit('disconnected', { reason: 'Cierre de sesión manual' });
 }

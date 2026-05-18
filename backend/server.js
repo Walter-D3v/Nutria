@@ -3,7 +3,7 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import { generateTestMessage, generateMessageForProfile } from './src/services/ai.js';
-import { setIo, getClient, getIsReady, initWhatsApp, sendWhatsAppMessage, logoutWhatsApp, getSavedSessions } from './src/services/whatsapp.js';
+import { setIo, getClient, getIsReady, initWhatsApp, sendWhatsAppMessage, logoutWhatsApp } from './src/services/whatsapp.js';
 import prisma from './src/config/db.js';
 import profileRoutes from './src/routes/profile.routes.js';
 import snapshotRoutes from './src/routes/snapshot.routes.js';
@@ -85,39 +85,23 @@ io.on('connection', (socket) => {
     const userId = socket.user.id;
     console.log(`Cliente web conectado: ${socket.id} (Usuario ID: ${userId})`);
     
-    // Aislar al usuario en su propia sala
-    socket.join(`user_${userId}`);
+    // Devolver el estado actual a este cliente
+    if (getClient() && getIsReady()) {
+        socket.emit('ready', { status: 'Conectado exitosamente' });
+    }
 
-    // Devolver lista de sesiones del usuario particular
-    socket.emit('sessions_list', { sessions: getSavedSessions(userId) });
-
-    socket.on('start-connection', ({ clientId }) => {
-        if (!clientId) {
-            socket.emit('error', { message: 'Se requiere un clientId' });
-            return;
-        }
-        
-        const realClientId = `user_${userId}_${clientId}`;
-        
-        if (!getClient(realClientId)) {
-            initWhatsApp(realClientId, userId);
-        } else if (getIsReady(realClientId)) {
-            socket.emit('ready', { clientId, status: 'Ya conectado' });
+    socket.on('start-connection', () => {
+        if (!getClient()) {
+            initWhatsApp();
+        } else if (getIsReady()) {
+            socket.emit('ready', { status: 'Ya conectado' });
         } else {
-            console.log(`El cliente ${realClientId} ya está en proceso de inicio.`);
+            console.log(`El cliente global ya está en proceso de inicio.`);
         }
     });
 
     socket.on('send_message', async (data) => {
-        const { clientId } = data;
-        if (!clientId) {
-            socket.emit('message_sent', { success: false, error: 'Falta clientId origen' });
-            return;
-        }
-
-        const realClientId = `user_${userId}_${clientId}`;
-
-        if (getClient(realClientId) && getIsReady(realClientId)) {
+        if (getClient() && getIsReady()) {
             let profile = null;
             let text = null;
             let status = 'failed';
@@ -134,15 +118,15 @@ io.on('connection', (socket) => {
                     text = await generateTestMessage(patientName, topic);
                 }
 
-                console.log(`Mensaje generado para enviar por ${clientId}:`, text);
+                console.log(`Mensaje generado para enviar:`, text);
 
                 const targetNumber = profile?.phone || number;
-                await sendWhatsAppMessage(realClientId, targetNumber, text);
+                await sendWhatsAppMessage(targetNumber, text);
                 status = 'sent';
-                socket.emit('message_sent', { clientId, success: true, to: targetNumber });
+                socket.emit('message_sent', { success: true, to: targetNumber });
             } catch (e) {
-                console.error(`Error al enviar mensaje desde la UI (${clientId}):`, e);
-                socket.emit('message_sent', { clientId, success: false, error: e.message });
+                console.error(`Error al enviar mensaje desde la UI:`, e);
+                socket.emit('message_sent', { success: false, error: e.message });
             } finally {
                 if (profile && text) {
                     await prisma.messageLog.create({
@@ -150,15 +134,13 @@ io.on('connection', (socket) => {
                     }).catch(err => console.error('Error al guardar historial de mensaje:', err));
                 }
             }
+        } else {
+            socket.emit('message_sent', { success: false, error: 'WhatsApp no está conectado' });
         }
     });
 
-    socket.on('logout', async ({ clientId }) => {
-        if (clientId) {
-            const realClientId = `user_${userId}_${clientId}`;
-            await logoutWhatsApp(realClientId);
-            socket.emit('sessions_list', { sessions: getSavedSessions(userId) });
-        }
+    socket.on('logout', async () => {
+        await logoutWhatsApp();
     });
 
     socket.on('disconnect', () => {

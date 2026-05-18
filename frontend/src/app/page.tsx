@@ -593,18 +593,7 @@ function WhatsAppSection() {
   const [selectedProfileId, setSelectedProfileId] = useState<string>("");
   const [sendMessageStatus, setSendMessageStatus] = useState<{ loading: boolean; success?: boolean; msg?: string }>({ loading: false });
 
-  // Novedades para Multi-Cliente
-  const [sessionsList, setSessionsList] = useState<string[]>([]);
-  const [clientNameInput, setClientNameInput] = useState("");
-  
-  const [activeClientIdState, setActiveClientIdState] = useState<string | null>(null);
-  const activeClientIdRef = useRef<string | null>(null);
 
-  const activeClientId = activeClientIdState;
-  const setActiveClientId = (id: string | null) => {
-    activeClientIdRef.current = id;
-    setActiveClientIdState(id);
-  };
 
   useEffect(() => {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
@@ -614,28 +603,27 @@ function WhatsAppSection() {
     });
     setSocket(newSocket);
 
-    newSocket.on("sessions_list", (data: { sessions: string[] }) => setSessionsList(data.sessions));
-    
-    newSocket.on("qr", (data: { clientId: string, qr: string }) => { 
-        if (data.clientId === activeClientIdRef.current) { setQrCode(data.qr); setStatus("qr"); }
+    newSocket.on("qr", (data: { qr: string }) => { 
+        setQrCode(data.qr); 
+        setStatus("qr"); 
     });
-    newSocket.on("loading", (data: { clientId: string, message: string }) => {
-        if (data.clientId === activeClientIdRef.current) setStatus("loading");
+    newSocket.on("loading", (data: { message: string }) => {
+        setStatus("loading");
     });
-    newSocket.on("ready", (data: { clientId: string, status: string }) => {
-        if (data.clientId === activeClientIdRef.current) { setStatus("connected"); }
+    newSocket.on("ready", (data: { status: string }) => {
+        setStatus("connected"); 
     });
-    newSocket.on("auth_failure", (data: { clientId: string }) => { 
-        if (data.clientId === activeClientIdRef.current) { setStatus("error"); setErrorMessage("Fallo la autenticación. Intenta de nuevo."); }
+    newSocket.on("auth_failure", () => { 
+        setStatus("error"); 
+        setErrorMessage("Fallo la autenticación. Intenta de nuevo."); 
     });
-    newSocket.on("disconnected", (data: { clientId: string }) => { 
-        if (data.clientId === activeClientIdRef.current) { setStatus("idle"); setQrCode(""); setActiveClientId(null); }
+    newSocket.on("disconnected", () => { 
+        setStatus("idle"); 
+        setQrCode(""); 
     });
-    newSocket.on("message_sent", (data: { clientId: string, success: boolean, error?: string }) => {
-      if (data.clientId === activeClientIdRef.current) {
-          setSendMessageStatus({ loading: false, success: data.success, msg: data.success ? "✅ Mensaje enviado exitosamente" : `❌ ${data.error}` });
-          setTimeout(() => setSendMessageStatus({ loading: false }), 5000);
-      }
+    newSocket.on("message_sent", (data: { success: boolean, error?: string }) => {
+        setSendMessageStatus({ loading: false, success: data.success, msg: data.success ? "✅ Mensaje enviado exitosamente" : `❌ ${data.error}` });
+        setTimeout(() => setSendMessageStatus({ loading: false }), 5000);
     });
 
     fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001"}/api/profiles`)
@@ -647,24 +635,15 @@ function WhatsAppSection() {
   }, []);
 
   const handleSendMessage = () => {
-    if (socket && selectedProfileId && activeClientId) {
+    if (socket && selectedProfileId) {
       setSendMessageStatus({ loading: true });
-      socket.emit("send_message", { profileId: parseInt(selectedProfileId), clientId: activeClientId });
+      socket.emit("send_message", { profileId: parseInt(selectedProfileId) });
     }
   };
 
-  const handleStartConnection = (isNew: boolean, savedId?: string) => {
-      let idToUse = "";
-      if (isNew) {
-          if (!clientNameInput.trim()) return alert("Por favor escribe un nombre para la sesión.");
-          idToUse = clientNameInput.trim();
-      } else if (savedId) {
-          idToUse = savedId;
-      }
-      
-      setActiveClientId(idToUse);
+  const handleStartConnection = () => {
       setStatus("loading");
-      socket?.emit("start-connection", { clientId: idToUse });
+      socket?.emit("start-connection");
   };
 
 
@@ -690,34 +669,14 @@ function WhatsAppSection() {
           <div className="p-6">
             {status === "idle" && (
               <div className="space-y-6">
-                {sessionsList.length > 0 && (
-                    <div className="bg-slate-200 dark:bg-slate-700/50 rounded-xl p-4">
-                      <h4 className="font-semibold text-slate-800 dark:text-white mb-3">Conexiones Guardadas</h4>
-                      <div className="space-y-2">
-                          {sessionsList.map(s => (
-                              <button key={s} onClick={() => handleStartConnection(false, s)} className="w-full text-left bg-white dark:bg-slate-800 hover:bg-slate-50 border border-slate-300 dark:border-slate-600 rounded-lg px-4 py-2.5 transition-colors flex items-center justify-between">
-                                  <span className="font-medium text-slate-700 dark:text-slate-200">{s}</span>
-                                  <ChevronRight className="w-4 h-4 text-slate-400" />
-                              </button>
-                          ))}
-                      </div>
-                    </div>
-                )}
-
                 <div className="bg-slate-200 dark:bg-slate-700/50 rounded-xl p-4 space-y-3">
-                  <h4 className="font-semibold text-slate-800 dark:text-white">Conectar Nuevo Dispositivo</h4>
-                  <input
-                    type="text"
-                    placeholder="Ej. Dra. Ana, Recepción..."
-                    value={clientNameInput}
-                    onChange={e => setClientNameInput(e.target.value)}
-                    className="w-full bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-lg px-4 py-2.5 text-sm text-slate-800 dark:text-white"
-                  />
+                  <h4 className="font-semibold text-slate-800 dark:text-white">Conectar Dispositivo</h4>
+                  <p className="text-slate-600 dark:text-slate-400 text-sm">Escanea el código QR desde tu WhatsApp para conectar el bot a la plataforma.</p>
                   <button
-                    onClick={() => handleStartConnection(true)}
+                    onClick={() => handleStartConnection()}
                     className="w-full bg-primary hover:bg-primary/90 text-slate-900 font-semibold py-3 px-6 rounded-xl transition-all shadow-lg shadow-primary/30"
                   >
-                    Vincular Nuevo Dispositivo
+                    Vincular WhatsApp
                   </button>
                 </div>
               </div>
@@ -784,18 +743,18 @@ function WhatsAppSection() {
 
                 <div className="pt-2">
                   <button
-                    onClick={() => { setStatus("loading"); socket?.emit("logout", { clientId: activeClientId }); setClientNameInput(""); }}
+                    onClick={() => { setStatus("loading"); socket?.emit("logout"); }}
                     className="w-full flex items-center justify-center gap-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 font-semibold py-3 rounded-xl transition-all border border-red-500/30 shadow-sm"
                   >
-                    <LogOut className="w-5 h-5" /> Desvincular {activeClientId}
+                    <LogOut className="w-5 h-5" /> Desvincular WhatsApp
                   </button>
                 </div>
 
                 <button
-                  onClick={() => { setActiveClientId(null); setStatus("idle"); }}
+                  onClick={() => { setStatus("idle"); }}
                   className="w-full bg-slate-200 dark:bg-slate-700 hover:bg-slate-600 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:text-white font-medium py-2.5 px-6 rounded-xl transition-all"
                 >
-                  Regresar al Menú (Cerrar Tab)
+                  Regresar al Menú
                 </button>
               </div>
             )}
